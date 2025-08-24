@@ -53,7 +53,7 @@ export default function WorkoutDetailsScreen({ route }: Props) {
         }
     };
 
-    const handleAddExercise = (exercise: Exercise) => {
+    const handleAddExercise = (exercise: { name: string; sets: string; reps: string }) => {
         if (editingExercise) {
             const updated = exercises.map((ex) =>
                 ex.id === editingExercise.id ? { ...exercise, id: editingExercise.id } : ex

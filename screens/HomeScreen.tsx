@@ -7,9 +7,12 @@ import { Title, Subtitle } from '../components/Ui';
 import { colors, spacing } from '../theme';
 import { Calendar, LocaleConfig } from 'react-native-calendars';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Animated, Dimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+
+type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
+
 LocaleConfig.locales.en = {
     monthNames: [
         'January', 'February', 'March', 'April', 'May', 'June',
@@ -65,9 +68,9 @@ export default function HomeScreen({ navigation }: Props) {
     const insets = useSafeAreaInsets();
 
     const stats = [
-        { id: '1', label: 'This Week Workouts', value: '3 Sessions', icon: 'dumbbell' },
-        { id: '2', label: 'Total Time', value: '4h 30m', icon: 'timer-outline' },
-        { id: '3', label: 'Calories Burned', value: '1,500 kcal', icon: 'fire' },
+        { id: '1', label: 'This Week Workouts', value: '3 Sessions', icon: 'dumbbell' as IconName },
+        { id: '2', label: 'Total Time', value: '4h 30m', icon: 'timer-outline' as IconName },
+        { id: '3', label: 'Calories Burned', value: '1,500 kcal', icon: 'fire' as IconName },
     ];
 
     const recentWorkouts = [

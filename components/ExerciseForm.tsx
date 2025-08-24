@@ -2,14 +2,17 @@ import React, { useState } from 'react';
 import { View, TextInput, StyleSheet, TouchableOpacity, Text } from 'react-native';
 import { colors } from '../theme';
 
+// components/ExerciseForm.tsx
 type ExerciseFormProps = {
     onSubmit: (exercise: { name: string; sets: string; reps: string }) => void;
+    initialValues: { name: string; sets: string; reps: string };
+    renderSubmitButton?: (onPress: () => void) => React.JSX.Element; // 👈 pridėta
 };
 
-const ExerciseForm: React.FC<ExerciseFormProps> = ({ onSubmit }) => {
-    const [name, setName] = useState('');
-    const [sets, setSets] = useState('');
-    const [reps, setReps] = useState('');
+const ExerciseForm: React.FC<ExerciseFormProps> = ({ onSubmit, initialValues }) => {
+    const [name, setName] = useState(initialValues?.name || '');
+    const [sets, setSets] = useState(initialValues?.sets || '');
+    const [reps, setReps] = useState(initialValues?.reps || '');
 
     const handleSubmit = () => {
         if (!name.trim() || !sets.trim() || !reps.trim()) return;

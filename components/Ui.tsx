@@ -1,23 +1,30 @@
 // components/Ui.tsx
 import React from 'react';
-import { View, Text, Pressable, TextInput, StyleSheet, ViewStyle, TextStyle } from 'react-native';
+import { View, Text, Pressable, TextInput, StyleSheet, TextStyle, StyleProp } from 'react-native';
 import { colors, radii, spacing } from '../theme';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import { ViewStyle } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+type ScreenProps = {
+    children: React.ReactNode;
+    style?: ViewStyle | ViewStyle[];
+};
 
-
-export const Screen: React.FC<React.PropsWithChildren> = ({ children }) => (
-    <View style={styles.screen}>{children}</View>
+export const Screen: React.FC<ScreenProps> = ({ children, style }) => (
+    <SafeAreaView style={[{ flex: 1, backgroundColor: colors.bg }, style]}>
+        {children}
+    </SafeAreaView>
 );
 
-export const Title: React.FC<{ children: React.ReactNode; style?: TextStyle }> = ({ children, style }) => (
+export const Title: React.FC<{ children: React.ReactNode; style?: StyleProp<TextStyle> }> = ({ children, style }) => (
     <Text style={[styles.title, style]}>{children}</Text>
 );
 
-export const Subtitle: React.FC<{ children: React.ReactNode; style?: TextStyle }> = ({ children, style }) => (
+export const Subtitle: React.FC<{ children: React.ReactNode; style?: StyleProp<TextStyle> }> = ({ children, style }) => (
     <Text style={[styles.subtitle, style]}>{children}</Text>
 );
 
-export const Card: React.FC<React.PropsWithChildren<{ style?: ViewStyle }>> = ({ children, style }) => (
+export const Card: React.FC<React.PropsWithChildren<{ style?: StyleProp<ViewStyle> }>> = ({ children, style }) => (
     <View style={[styles.card, style]}>{children}</View>
 );
 

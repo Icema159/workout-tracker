@@ -9,19 +9,23 @@ import StatsScreen from '../screens/StatsScreen';
 import { View, Text } from 'react-native';
 import { Icon } from '../components/Icon';
 import { colors } from '../theme';
-import WorkoutDetailsScreen from '../screens/WorkoutDetailsScreen';
-import AddWorkoutScreen from '../screens/AddWorkoutScreen';
+import { TabParamList } from './types';
 
-const Tab = createBottomTabNavigator();
+type WorkoutsStackParamList = {
+    WorkoutsList: undefined;
+};
 
-const WorkoutsStack = createNativeStackNavigator();
+const Tab = createBottomTabNavigator<TabParamList>();
+
+const WorkoutsStack = createNativeStackNavigator<WorkoutsStackParamList>();
 
 function WorkoutsStackNavigator() {
     return (
         <WorkoutsStack.Navigator screenOptions={{ headerShown: false }}>
-            <WorkoutsStack.Screen name="WorkoutsList" component={WorkoutsListScreen} />
-            <WorkoutsStack.Screen name="AddWorkout" component={AddWorkoutScreen} />
-            <WorkoutsStack.Screen name="WorkoutDetails" component={WorkoutDetailsScreen} />
+            <WorkoutsStack.Screen
+                name="WorkoutsList"
+                component={WorkoutsListScreen}
+            />
         </WorkoutsStack.Navigator>
     );
 }

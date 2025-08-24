@@ -9,6 +9,7 @@ import { Screen, Title, Icon } from '../components/Ui';
 import GradientCard from '../components/GradientCard';
 import { colors } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { RootStackParamList } from '../navigation/types';
 
 const STORAGE_KEY = 'workouts';
 
@@ -16,12 +17,6 @@ type Workout = {
     id: string;
     name: string;
     date: string;
-};
-
-type RootStackParamList = {
-    WorkoutsList: undefined;
-    AddWorkout: undefined;
-    WorkoutDetails: { workoutId: string; title: string };
 };
 
 type Props = NativeStackScreenProps<RootStackParamList, 'WorkoutsList'>;
@@ -130,7 +125,7 @@ export default function WorkoutsListScreen({ navigation }: Props) {
                 </GradientCard>
                 <TouchableOpacity
                     style={styles.floatingButton}
-                    onPress={() => navigation.navigate('AddWorkout')}
+                    onPress={() => navigation.navigate('AddWorkout', { workoutId: undefined })}
                 >
                     <Icon.Ionicons name="add" size={18} color="#000" />
                     <Text style={styles.floatingButtonText}>Add Workout</Text>
@@ -172,12 +167,10 @@ const styles = StyleSheet.create({
         fontSize: 18,
         fontWeight: '600',
         color: '#fff',
-        textAlign: 'center',
     },
     workoutDate: {
         fontSize: 14,
         color: '#999',
-        textAlign: 'center'
     },
     workoutText: { fontSize: 18, marginBottom: 6 },
     buttonsRow: { flexDirection: 'row', gap: 8 },

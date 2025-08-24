@@ -5,8 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from '../theme';
 import { Card } from '../components/Card';
 import { ProgressBar } from '../components/ProgressBar';
-import Icon from 'react-native-vector-icons/Ionicons';
-import Ionicons from 'react-native-vector-icons/Ionicons';
+import { Ionicons } from '@expo/vector-icons';
 import CircularProgress from 'react-native-circular-progress-indicator';
 import GradientCard from '../components/GradientCard';
 
@@ -46,17 +45,17 @@ export default function StatsScreen() {
                     <Text style={styles.cardTitle}>Workouts Overview</Text>
                     <View style={styles.row}>
                         <View style={styles.statBox}>
-                            <Icon name="barbell" size={28} color={colors.accent} />
+                            <Ionicons name="barbell" size={28} color={colors.accent} />
                             <Text style={styles.statNumber}>15</Text>
                             <Text style={styles.statLabel}>Workouts</Text>
                         </View>
                         <View style={styles.statBox}>
-                            <Icon name="calendar" size={28} color={colors.accent} />
+                            <Ionicons name="calendar" size={28} color={colors.accent} />
                             <Text style={styles.statNumber}>Aug 18</Text>
                             <Text style={styles.statLabel}>Last</Text>
                         </View>
                         <View style={styles.statBox}>
-                            <Icon name="time" size={28} color={colors.accent} />
+                            <Ionicons name="time" size={28} color={colors.accent} />
                             <Text style={styles.statNumber}>55m</Text>
                             <Text style={styles.statLabel}>Avg</Text>
                         </View>
@@ -68,17 +67,17 @@ export default function StatsScreen() {
                     <Text style={styles.cardTitle}>Exercises Stats</Text>
                     <View style={styles.row}>
                         <View style={styles.statBox}>
-                            <Icon name="list" size={28} color={colors.accent} />
+                            <Ionicons name="list" size={28} color={colors.accent} />
                             <Text style={styles.statNumber}>42</Text>
                             <Text style={styles.statLabel}>Exercises</Text>
                         </View>
                         <View style={styles.statBox}>
-                            <Icon name="flame" size={28} color={colors.accent} />
+                            <Ionicons name="flame" size={28} color={colors.accent} />
                             <Text style={styles.statNumber}>Bench</Text>
                             <Text style={styles.statLabel}>Most Used</Text>
                         </View>
                         <View style={styles.statBox}>
-                            <Icon name="repeat" size={28} color={colors.accent} />
+                            <Ionicons name="repeat" size={28} color={colors.accent} />
                             <Text style={styles.statNumber}>230/1800</Text>
                             <Text style={styles.statLabel}>Sets/Reps</Text>
                         </View>
@@ -103,7 +102,7 @@ export default function StatsScreen() {
                 </Card>
 
                 {/* Motivation */}
-                <Card style={[styles.motivationCard, styles.largeCard]}>
+                <Card style={{ ...styles.motivationCard, ...styles.largeCard }}>
                     <View style={styles.motivationRow}>
                         <Ionicons name="flame" size={20} color={colors.accent} style={{ marginRight: 6 }} />
                         <Text style={styles.motivationText}>You already did 5 workouts this month!</Text>
