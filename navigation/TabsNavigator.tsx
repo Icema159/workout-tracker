@@ -9,11 +9,7 @@ import StatsScreen from '../screens/StatsScreen';
 import { View, Text } from 'react-native';
 import { Icon } from '../components/Icon';
 import { colors } from '../theme';
-import { TabParamList } from './types';
-
-type WorkoutsStackParamList = {
-    WorkoutsList: undefined;
-};
+import { TabParamList, WorkoutsStackParamList } from './types';
 
 const Tab = createBottomTabNavigator<TabParamList>();
 

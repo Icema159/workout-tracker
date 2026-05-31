@@ -1,25 +1,34 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, TextInput, StyleSheet, TouchableOpacity, Text } from 'react-native';
 import { colors } from '../theme';
 
 // components/ExerciseForm.tsx
 type ExerciseFormProps = {
-    onSubmit: (exercise: { name: string; sets: string; reps: string }) => void;
-    initialValues: { name: string; sets: string; reps: string };
+    onSubmit: (exercise: { name: string; sets: string; reps: string; weight: string }) => void;
+    initialValues: { name: string; sets: string; reps: string; weight?: string };
     renderSubmitButton?: (onPress: () => void) => React.JSX.Element; // 👈 pridėta
 };
 
-const ExerciseForm: React.FC<ExerciseFormProps> = ({ onSubmit, initialValues }) => {
+const ExerciseForm: React.FC<ExerciseFormProps> = ({ onSubmit, initialValues, renderSubmitButton }) => {
     const [name, setName] = useState(initialValues?.name || '');
     const [sets, setSets] = useState(initialValues?.sets || '');
     const [reps, setReps] = useState(initialValues?.reps || '');
+    const [weight, setWeight] = useState(initialValues?.weight || '');
+
+    useEffect(() => {
+        setName(initialValues?.name || '');
+        setSets(initialValues?.sets || '');
+        setReps(initialValues?.reps || '');
+        setWeight(initialValues?.weight || '');
+    }, [initialValues]);
 
     const handleSubmit = () => {
         if (!name.trim() || !sets.trim() || !reps.trim()) return;
-        onSubmit({ name, sets, reps });
+        onSubmit({ name, sets, reps, weight });
         setName('');
         setSets('');
         setReps('');
+        setWeight('');
     };
 
     return (
@@ -47,10 +56,22 @@ const ExerciseForm: React.FC<ExerciseFormProps> = ({ onSubmit, initialValues }) 
                 onChangeText={setReps}
                 keyboardType="numeric"
             />
+            <TextInput
+                style={styles.input}
+                placeholder="Weight (optional)"
+                placeholderTextColor="#aaa"
+                value={weight}
+                onChangeText={setWeight}
+                keyboardType="numeric"
+            />
 
-            <TouchableOpacity style={styles.saveButton} onPress={handleSubmit}>
-                <Text style={styles.saveButtonText}>Save Exercise</Text>
-            </TouchableOpacity>
+            {renderSubmitButton ? (
+                renderSubmitButton(handleSubmit)
+            ) : (
+                <TouchableOpacity style={styles.saveButton} onPress={handleSubmit}>
+                    <Text style={styles.saveButtonText}>Save Exercise</Text>
+                </TouchableOpacity>
+            )}
         </View>
     );
 };

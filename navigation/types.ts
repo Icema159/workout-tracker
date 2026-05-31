@@ -1,17 +1,36 @@
-// navigation/types.ts
-// navigation/types.ts (arba čia viršuje)
+import { NavigatorScreenParams } from '@react-navigation/native';
+
 export type TabParamList = {
     Home: undefined;
-    Workouts: undefined;
+    Workouts: NavigatorScreenParams<WorkoutsStackParamList> | undefined;
     Stats: undefined;
     Profile: undefined;
 };
 
-export type RootStackParamList = {
+export type WorkoutsStackParamList = {
     WorkoutsList: undefined;
-    WorkoutDetails: { workoutId: string; title: string };
-    AddWorkout: { workoutId?: string }; // 👈 pridedam čia
-    Home: undefined;
-    Stats: undefined;
-    Profile: undefined;
+};
+
+export type RootStackParamList = {
+    Tabs: NavigatorScreenParams<TabParamList> | undefined;
+    TodayWorkout: {
+        workoutId: string;
+        title: string;
+        date: string;
+        exerciseCount?: number;
+    };
+    WorkoutDetails: {
+        workoutId?: string;
+        title?: string;
+        date?: string;
+        isDraft?: boolean;
+    };
+    ActiveWorkout: {
+        workoutId: string;
+        title: string;
+        date?: string;
+    };
+    FinishedWorkoutSummary: {
+        workoutId: string;
+    };
 };

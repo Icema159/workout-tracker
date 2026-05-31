@@ -1,203 +1,549 @@
-// screens/WorkoutsListScreen.tsx
-import React, { useState, useCallback } from 'react';
-import { View, Text, Button, FlatList, StyleSheet, Alert, TextInput, TouchableOpacity } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Alert, FlatList, GestureResponderEvent, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { CompositeScreenProps, useFocusEffect } from '@react-navigation/native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from '@react-navigation/native';
-import { Screen, Title, Icon } from '../components/Ui';
-import GradientCard from '../components/GradientCard';
-import { colors } from '../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { RootStackParamList } from '../navigation/types';
+import GradientCard from '../components/GradientCard';
+import { Icon } from '../components/Ui';
+import { RootStackParamList, WorkoutsStackParamList } from '../navigation/types';
+import { colors, spacing } from '../theme';
+import {
+    deleteWorkout,
+    getCompletedSetCount,
+    getTotalSetCount,
+    getWorkoutWithExercises,
+    WorkoutStatus,
+} from '../lib/workouts';
+import { getWorkoutImageSource } from '../lib/workoutImages';
+import {
+    clearSelectedTodayWorkoutId,
+    getSelectedTodayWorkoutId,
+    saveSelectedTodayWorkoutId,
+} from '../lib/selectedTodayWorkout';
 
-const STORAGE_KEY = 'workouts';
+type Props = CompositeScreenProps<
+    NativeStackScreenProps<WorkoutsStackParamList, 'WorkoutsList'>,
+    NativeStackScreenProps<RootStackParamList>
+>;
 
-type Workout = {
-    id: string;
-    name: string;
-    date: string;
-};
-
-type Props = NativeStackScreenProps<RootStackParamList, 'WorkoutsList'>;
+type WorkoutListItem = Awaited<ReturnType<typeof getWorkoutWithExercises>>[number];
+type WorkoutsSection = 'plans' | 'history';
 
 export default function WorkoutsListScreen({ navigation }: Props) {
-    const [workouts, setWorkouts] = useState<Workout[]>([]);
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [newTitle, setNewTitle] = useState('');
+    const [workouts, setWorkouts] = useState<WorkoutListItem[]>([]);
+    const [selectedTodayWorkoutId, setSelectedTodayWorkoutId] = useState<string | null>(null);
+    const [selectedSection, setSelectedSection] = useState<WorkoutsSection>('plans');
     const insets = useSafeAreaInsets();
 
-    const loadWorkouts = async () => {
+    const loadWorkouts = useCallback(async () => {
         try {
-            const stored = await AsyncStorage.getItem(STORAGE_KEY);
-            if (stored) setWorkouts(JSON.parse(stored));
+            const [storedWorkouts, storedSelectedWorkoutId] = await Promise.all([
+                getWorkoutWithExercises(),
+                getSelectedTodayWorkoutId(),
+            ]);
+
+            const selectedWorkout = storedWorkouts.find((workout) => workout.id === storedSelectedWorkoutId);
+            setWorkouts(storedWorkouts);
+
+            if (selectedWorkout && selectedWorkout.status !== 'finished') {
+                setSelectedTodayWorkoutId(storedSelectedWorkoutId);
+            } else {
+                setSelectedTodayWorkoutId(null);
+
+                if (storedSelectedWorkoutId) {
+                    await clearSelectedTodayWorkoutId();
+                }
+            }
         } catch (error) {
             console.error('Error loading workouts', error);
         }
-    };
+    }, []);
 
     useFocusEffect(
         useCallback(() => {
             loadWorkouts();
-        }, [])
+        }, [loadWorkouts])
     );
 
-    const saveWorkouts = async (updated: Workout[]) => {
+    const visibleWorkouts = useMemo(
+        () =>
+            selectedSection === 'plans'
+                ? workouts.filter((workout) => workout.status !== 'finished')
+                : workouts.filter((workout) => workout.status === 'finished'),
+        [selectedSection, workouts]
+    );
+    const isHistory = selectedSection === 'history';
+
+    const handleSelectTodayWorkout = async (workoutId: string) => {
+        setSelectedTodayWorkoutId(workoutId);
+
         try {
-            await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+            await saveSelectedTodayWorkoutId(workoutId);
         } catch (error) {
-            console.error('Error saving workouts', error);
+            console.error('Error saving selected today workout', error);
         }
     };
 
-    const handleDeleteWorkout = (id: string) => {
-        Alert.alert('Confirm', 'Delete this workout?', [
+    const handleOpenWorkout = (event: GestureResponderEvent, item: WorkoutListItem) => {
+        event.stopPropagation();
+        navigation.navigate('WorkoutDetails', {
+            workoutId: item.id,
+            title: item.name,
+            date: item.date,
+        });
+    };
+
+    const handleViewSummary = (event: GestureResponderEvent, workoutId: string) => {
+        event.stopPropagation();
+        navigation.navigate('FinishedWorkoutSummary', {
+            workoutId,
+        });
+    };
+
+    const handleDeleteWorkout = (workoutId: string) => {
+        Alert.alert('Delete workout', 'This will also remove all exercises in the session.', [
             { text: 'Cancel', style: 'cancel' },
             {
                 text: 'Delete',
                 style: 'destructive',
                 onPress: async () => {
-                    const updated = workouts.filter((w) => w.id !== id);
-                    setWorkouts(updated);
-                    saveWorkouts(updated);
-
-                    // Taip pat ištrinam visus pratimus iš šios treniruotės
-                    await AsyncStorage.removeItem(`exercises_${id}`);
+                    await deleteWorkout(workoutId);
+                    if (selectedTodayWorkoutId === workoutId) {
+                        setSelectedTodayWorkoutId(null);
+                        await clearSelectedTodayWorkoutId();
+                    }
+                    loadWorkouts();
                 },
             },
         ]);
     };
 
-    const handleEditWorkout = (workout: Workout) => {
-        navigation.navigate('AddWorkout', { workoutId: workout.id });
-    };
-
-    const handleSaveEdit = () => {
-        if (!newTitle.trim()) {
-            Alert.alert('Error', 'Title cannot be empty');
-            return;
-        }
-        const updated = workouts.map((w) =>
-            w.id === editingId ? { ...w, title: newTitle } : w
-        );
-        setWorkouts(updated);
-        saveWorkouts(updated);
-        setEditingId(null);
-        setNewTitle('');
-    };
-
     return (
-        <Screen style={styles.container}>
-            <View style={{ flex: 1 }}>
-                <View style={{ paddingTop: insets.top + 16, alignItems: 'center' }}>
-                    <Title style={styles.greeting}>Workouts</Title>
-                </View>
+        <View style={styles.container}>
+            <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
+                <Text style={styles.title}>Workouts</Text>
+                <Text style={styles.subtitle}>Choose a plan for today or review completed sessions.</Text>
+            </View>
 
-                <GradientCard>
-                    {workouts.length === 0 ? (
-                        <View style={styles.noWorkoutsContainer}>
-                            <Text style={styles.noWorkoutsTitle}>No workouts yet</Text>
-                            <Text style={styles.noWorkoutsSubtitle}>Add your first workout</Text>
-                        </View>
-                    ) : (
-                        <FlatList
-                            data={workouts}
-                            keyExtractor={(item) => item.id}
-                            renderItem={({ item }) => (
-                                <Swipeable renderRightActions={() => renderRightActions(item)}>
-                                    <TouchableOpacity
-                                        onPress={() =>
-                                            navigation.navigate('WorkoutDetails', {
-                                                workoutId: item.id,
-                                                title: item.name,
-                                            })
-                                        }
-                                    >
-                                        <View style={styles.workoutItem}>
-                                            <Text style={styles.workoutName}>{item.name}</Text>
-                                            <Text style={styles.workoutDate}>{item.date}</Text>
-                                        </View>
-                                    </TouchableOpacity>
-                                </Swipeable>
-                            )}
-                        />
-                    )}
-                </GradientCard>
+            <View style={styles.segmentedControl}>
                 <TouchableOpacity
-                    style={styles.floatingButton}
-                    onPress={() => navigation.navigate('AddWorkout', { workoutId: undefined })}
+                    style={[
+                        styles.segmentButton,
+                        selectedSection === 'plans' && styles.segmentButtonActive,
+                    ]}
+                    onPress={() => setSelectedSection('plans')}
                 >
-                    <Icon.Ionicons name="add" size={18} color="#000" />
+                    <Text
+                        style={[
+                            styles.segmentButtonText,
+                            selectedSection === 'plans' && styles.segmentButtonTextActive,
+                        ]}
+                    >
+                        Plans
+                    </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                    style={[
+                        styles.segmentButton,
+                        selectedSection === 'history' && styles.segmentButtonActive,
+                    ]}
+                    onPress={() => setSelectedSection('history')}
+                >
+                    <Text
+                        style={[
+                            styles.segmentButtonText,
+                            selectedSection === 'history' && styles.segmentButtonTextActive,
+                        ]}
+                    >
+                        History
+                    </Text>
+                </TouchableOpacity>
+            </View>
+
+            <View style={styles.content}>
+                {visibleWorkouts.length === 0 ? (
+                    <GradientCard style={styles.emptyCard}>
+                        <View style={styles.emptyState}>
+                            <Text style={styles.emptyTitle}>
+                                {isHistory ? 'No workout history yet' : 'No workout plans yet'}
+                            </Text>
+                            <Text style={styles.emptySubtitle}>
+                                {isHistory
+                                    ? 'Finished workouts will appear here after you complete them.'
+                                    : 'Create a workout plan to use in your training.'}
+                            </Text>
+                        </View>
+                    </GradientCard>
+                ) : (
+                    <FlatList
+                        data={visibleWorkouts}
+                        keyExtractor={(item) => item.id}
+                        contentContainerStyle={styles.listContent}
+                        renderItem={({ item }) => {
+                            const completedSets = getCompletedSetCount(item.exercises);
+                            const totalSets = getTotalSetCount(item.exercises);
+                            const workoutImageSource = getWorkoutImageSource(item.name);
+                            const isSelectedToday = !isHistory && item.id === selectedTodayWorkoutId;
+                            const summaryParts = [
+                                `${item.exercises.length} exercises`,
+                                `${completedSets}/${totalSets} sets`,
+                            ];
+
+                            if (item.durationSeconds) {
+                                summaryParts.push(formatDuration(item.durationSeconds));
+                            }
+
+                            return (
+                                <TouchableOpacity
+                                    style={[
+                                        styles.workoutCard,
+                                        item.status === 'finished' && styles.workoutCardFinished,
+                                        item.status === 'in_progress' && styles.workoutCardInProgress,
+                                        isSelectedToday && styles.workoutCardSelected,
+                                    ]}
+                                    onPress={() =>
+                                        isHistory
+                                            ? navigation.navigate('FinishedWorkoutSummary', { workoutId: item.id })
+                                            : handleSelectTodayWorkout(item.id)
+                                    }
+                                >
+                                    <Image
+                                        source={workoutImageSource}
+                                        style={styles.workoutImage}
+                                        resizeMode="cover"
+                                    />
+                                    <View style={styles.workoutHeader}>
+                                        <View style={styles.workoutHeaderLeft}>
+                                            <View style={[styles.statusBadge, getStatusBadgeStyle(item.status)]}>
+                                                <Text style={[styles.statusBadgeText, getStatusTextStyle(item.status)]}>
+                                                    {getStatusLabel(item.status)}
+                                                </Text>
+                                            </View>
+                                            {isSelectedToday ? (
+                                                <View style={styles.todayBadge}>
+                                                    <Icon.Ionicons name="today-outline" size={13} color={colors.bg} />
+                                                    <Text style={styles.todayBadgeText}>Today</Text>
+                                                </View>
+                                            ) : null}
+                                            <Text style={styles.workoutName}>{item.name}</Text>
+                                        </View>
+                                        <TouchableOpacity
+                                            style={styles.deleteIconButton}
+                                            onPress={(event) => {
+                                                event.stopPropagation();
+                                                handleDeleteWorkout(item.id);
+                                            }}
+                                        >
+                                            <Icon.Ionicons name="trash-outline" size={18} color="#F87171" />
+                                        </TouchableOpacity>
+                                    </View>
+
+                                    <Text style={styles.workoutDate}>{formatFriendlyDate(item.date)}</Text>
+                                    <Text style={styles.summaryText}>{summaryParts.join(' • ')}</Text>
+
+                                    <View style={styles.cardFooter}>
+                                        <Text style={styles.footerHint}>
+                                            {isSelectedToday
+                                                ? 'Selected for today\'s session'
+                                                : isHistory
+                                                    ? 'Completed workout'
+                                                    : item.status === 'in_progress'
+                                                        ? 'Workout is currently active'
+                                                        : 'Tap card to use today'}
+                                        </Text>
+                                        <TouchableOpacity
+                                            style={styles.openPill}
+                                            onPress={(event) =>
+                                                isHistory
+                                                    ? handleViewSummary(event, item.id)
+                                                    : handleOpenWorkout(event, item)
+                                            }
+                                        >
+                                            <Text style={styles.openPillText}>
+                                                {isHistory
+                                                    ? 'View Summary'
+                                                    : item.status === 'in_progress'
+                                                        ? 'Continue'
+                                                        : 'Open'}
+                                            </Text>
+                                            <Icon.Ionicons name="chevron-forward" size={16} color={colors.bg} />
+                                        </TouchableOpacity>
+                                    </View>
+                                </TouchableOpacity>
+                            );
+                        }}
+                    />
+                )}
+            </View>
+
+            {!isHistory ? (
+                <TouchableOpacity
+                    style={[styles.floatingButton, { bottom: Math.max(insets.bottom, 20) }]}
+                    onPress={() =>
+                        navigation.navigate('WorkoutDetails', {
+                            isDraft: true,
+                            title: 'New Workout',
+                            date: new Date().toISOString().slice(0, 10),
+                        })
+                    }
+                >
+                    <Icon.Ionicons name="add" size={20} color={colors.bg} />
                     <Text style={styles.floatingButtonText}>Add Workout</Text>
                 </TouchableOpacity>
-            </View>
-        </Screen>
+            ) : null}
+        </View>
     );
-    function renderRightActions(item: Workout) {
-        return (
-            <View style={styles.rightActionsContainer}>
-                <TouchableOpacity
-                    style={[styles.actionButton, styles.editButton]}
-                    onPress={() => handleEditWorkout(item)}
-                >
-                    <Icon.Ionicons name="create-outline" size={22} color="#fff" />
-                    <Text style={styles.actionText}>Edit</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                    style={[styles.actionButton, styles.deleteButton]}
-                    onPress={() => handleDeleteWorkout(item.id)}
-                >
-                    <Icon.Ionicons name="trash-outline" size={22} color="#fff" />
-                    <Text style={styles.actionText}>Delete</Text>
-                </TouchableOpacity>
-            </View>
-        );
+}
+
+function getStatusLabel(status: WorkoutStatus) {
+    switch (status) {
+        case 'finished':
+            return 'Finished';
+        case 'in_progress':
+            return 'In Progress';
+        default:
+            return 'Planned';
     }
 }
 
+function getStatusBadgeStyle(status: WorkoutStatus) {
+    switch (status) {
+        case 'finished':
+            return { backgroundColor: '#16311C', borderColor: '#2E7D32' };
+        case 'in_progress':
+            return { backgroundColor: '#2A220E', borderColor: '#D4A017' };
+        default:
+            return { backgroundColor: '#181818', borderColor: '#2A2A2A' };
+    }
+}
+
+function getStatusTextStyle(status: WorkoutStatus) {
+    switch (status) {
+        case 'finished':
+            return { color: '#86EFAC' };
+        case 'in_progress':
+            return { color: '#FCD34D' };
+        default:
+            return { color: colors.text };
+    }
+}
+
+function formatFriendlyDate(date: string) {
+    const parsed = new Date(`${date}T00:00:00`);
+
+    if (Number.isNaN(parsed.getTime())) {
+        return date;
+    }
+
+    return parsed.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+    });
+}
+
+function formatDuration(durationSeconds: number) {
+    const minutes = Math.max(1, Math.round(durationSeconds / 60));
+
+    return `${minutes} min`;
+}
+
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.bg },
-    title: { fontSize: 24, fontWeight: 'bold', marginBottom: 16 },
-    workoutItem: {
-        padding: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: '#ccc',
+    container: {
+        flex: 1,
+        backgroundColor: colors.bg,
+    },
+    header: {
+        paddingHorizontal: spacing.lg,
+        alignItems: 'center',
+    },
+    title: {
+        fontSize: 32,
+        fontWeight: '700',
+        color: colors.accent,
+    },
+    subtitle: {
+        marginTop: spacing.xs,
+        color: colors.sub,
+        textAlign: 'center',
+    },
+    segmentedControl: {
+        flexDirection: 'row',
+        marginHorizontal: spacing.md,
+        marginTop: spacing.lg,
+        backgroundColor: '#111111',
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: '#242424',
+        padding: 4,
+    },
+    segmentButton: {
+        flex: 1,
+        borderRadius: 12,
+        paddingVertical: 10,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    segmentButtonActive: {
+        backgroundColor: colors.accent,
+    },
+    segmentButtonText: {
+        color: colors.sub,
+        fontSize: 14,
+        fontWeight: '800',
+    },
+    segmentButtonTextActive: {
+        color: colors.bg,
+    },
+    content: {
+        flex: 1,
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.lg,
+        paddingBottom: 100,
+    },
+    listContent: {
+        paddingBottom: spacing.sm,
+    },
+    emptyCard: {
+        flex: 1,
+    },
+    emptyState: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingVertical: spacing.xl,
+    },
+    emptyTitle: {
+        color: colors.text,
+        fontSize: 18,
+        fontWeight: '600',
+    },
+    emptySubtitle: {
+        color: colors.sub,
+        marginTop: spacing.xs,
+        textAlign: 'center',
+    },
+    workoutCard: {
+        backgroundColor: '#121212',
+        borderRadius: 22,
+        borderWidth: 1,
+        borderColor: '#232323',
+        padding: spacing.lg,
+        marginBottom: spacing.md,
+    },
+    workoutImage: {
+        width: '100%',
+        height: 150,
+        borderRadius: 16,
+        marginBottom: spacing.md,
+        backgroundColor: '#1A1A1A',
+    },
+    workoutCardFinished: {
+        borderColor: '#244B2A',
+        backgroundColor: '#111B14',
+    },
+    workoutCardInProgress: {
+        borderColor: '#D4A017',
+        backgroundColor: '#1B1810',
+    },
+    workoutCardSelected: {
+        borderColor: colors.accent,
+        borderWidth: 2,
+    },
+    workoutHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        marginBottom: spacing.sm,
+    },
+    workoutHeaderLeft: {
+        flex: 1,
+        paddingRight: spacing.md,
+    },
+    statusBadge: {
+        alignSelf: 'flex-start',
+        borderRadius: 999,
+        borderWidth: 1,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        marginBottom: spacing.sm,
+    },
+    statusBadgeText: {
+        fontSize: 11,
+        fontWeight: '800',
+        letterSpacing: 0.5,
+        textTransform: 'uppercase',
+    },
+    todayBadge: {
+        alignSelf: 'flex-start',
+        borderRadius: 999,
+        backgroundColor: colors.accent,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        marginBottom: spacing.sm,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+    },
+    todayBadgeText: {
+        color: colors.bg,
+        fontSize: 11,
+        fontWeight: '800',
+        letterSpacing: 0.5,
+        textTransform: 'uppercase',
     },
     workoutName: {
-        fontSize: 18,
-        fontWeight: '600',
-        color: '#fff',
+        color: colors.text,
+        fontSize: 20,
+        fontWeight: '700',
+    },
+    deleteIconButton: {
+        width: 38,
+        height: 38,
+        borderRadius: 19,
+        backgroundColor: '#1A1A1A',
+        borderWidth: 1,
+        borderColor: '#2A2A2A',
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     workoutDate: {
-        fontSize: 14,
-        color: '#999',
+        color: colors.sub,
+        marginBottom: spacing.xs,
     },
-    workoutText: { fontSize: 18, marginBottom: 6 },
-    buttonsRow: { flexDirection: 'row', gap: 8 },
-    input: {
-        borderWidth: 1,
-        borderColor: '#ccc',
-        padding: 6,
-        marginBottom: 6,
-        borderRadius: 4,
-    },
-    accentBorder: {
-        width: 6,
-        height: '100%',
-        backgroundColor: '#C7EA46',
-        borderRadius: 3,
-        marginRight: 12,
-    },
-    cardTitle: {
-        color: '#FFFFFF',
-        fontSize: 18,
+    summaryText: {
+        color: colors.text,
+        fontSize: 15,
         fontWeight: '600',
+        marginBottom: spacing.md,
+    },
+    cardFooter: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    footerHint: {
+        flex: 1,
+        color: colors.sub,
+        paddingRight: spacing.md,
+    },
+    openPill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        borderRadius: 999,
+        backgroundColor: colors.accent,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    openPillText: {
+        color: colors.bg,
+        fontWeight: '800',
     },
     floatingButton: {
         position: 'absolute',
-        bottom: 20,
         alignSelf: 'center',
-        backgroundColor: '#C7EA46',
+        backgroundColor: colors.accent,
         borderRadius: 30,
         paddingHorizontal: 20,
         paddingVertical: 12,
@@ -210,55 +556,9 @@ const styles = StyleSheet.create({
         elevation: 6,
     },
     floatingButtonText: {
-        color: '#000',
+        color: colors.bg,
         fontSize: 16,
-        fontWeight: '600',
+        fontWeight: '700',
         marginLeft: 8,
-    },
-    noWorkoutsContainer: {
-        alignItems: 'center',
-        paddingVertical: 40,
-    },
-    noWorkoutsTitle: {
-        fontSize: 18,
-        fontWeight: '600',
-        color: '#666',
-        marginBottom: 4,
-    },
-    noWorkoutsSubtitle: {
-        fontSize: 14,
-        color: '#999',
-    },
-    greeting: {
-        fontSize: 32,
-        fontWeight: 'bold',
-        color: colors.accent,
-    },
-    rightActionsContainer: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'flex-end',
-        height: '100%',
-    },
-    actionButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 16,
-        paddingVertical: 16,
-        marginLeft: 2,
-        borderRadius: 6,
-    },
-    editButton: {
-        backgroundColor: '#3498db',
-    },
-    deleteButton: {
-        backgroundColor: '#e74c3c',
-        marginLeft: 6,
-    },
-    actionText: {
-        color: '#fff',
-        fontWeight: 'bold',
-        marginLeft: 6,
-        fontSize: 15,
     },
 });

@@ -17,6 +17,8 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+ios/.xcode.env.local
+ios/build/
 
 # Metro
 .metro-health-check*
@@ -35,3 +37,4 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+project-context.md
