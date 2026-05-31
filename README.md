@@ -2,6 +2,30 @@
 
 React Native / Expo workout tracker with local `AsyncStorage` persistence.
 
+## Features
+
+- Create and edit workout plans
+- Select a workout as today’s training session
+- Preview and start an active workout
+- Track sets, reps, weight and completed sets
+- Finish workouts and view completed workout summaries
+- Separate workout plans and workout history
+- Local workout cover images based on workout type
+- Drag-and-drop exercise reordering
+- Local progress and profile statistics
+
+## Tech Stack
+
+- React Native
+- Expo
+- TypeScript
+- React Navigation
+- AsyncStorage
+- Expo Vector Icons
+- Expo Linear Gradient
+- react-native-calendars
+- react-native-draggable-flatlist
+
 ## Requirements
 
 - Node.js 20+
