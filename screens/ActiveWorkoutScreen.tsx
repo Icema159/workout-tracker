@@ -1,10 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Alert,
+    Animated,
+    Dimensions,
     FlatList,
+    LayoutChangeEvent,
+    Modal,
+    PanResponder,
     StyleSheet,
     Text,
-    TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
@@ -28,9 +32,25 @@ import {
 } from '../lib/workouts';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ActiveWorkout'>;
+type NormalizedExercise = ReturnType<typeof normalizeExercise>;
+type SetEditorTarget = {
+    exerciseId: string;
+    setId: string;
+    exerciseName: string;
+    setIndex: number;
+    reps: string;
+    weight: string;
+};
+type SetEditorField = 'weight' | 'reps';
+
+const REST_DURATION_SECONDS = 90;
+const SET_EDITOR_MAX_HEIGHT = Dimensions.get('window').height * 0.55;
 
 export default function ActiveWorkoutScreen({ route, navigation }: Props) {
     const { workoutId } = route.params;
+    const listRef = useRef<FlatList<NormalizedExercise>>(null);
+    const exerciseLayoutY = useRef<Record<string, number>>({});
+    const setLayoutY = useRef<Record<string, number>>({});
     const [workoutName, setWorkoutName] = useState(route.params.title);
     const [workoutDate, setWorkoutDate] = useState(
         route.params.date ?? new Date().toISOString().slice(0, 10)
@@ -38,6 +58,10 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
     const [exercises, setExercises] = useState<Exercise[]>([]);
     const [isSavingWorkout, setIsSavingWorkout] = useState(false);
     const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    const [restSeconds, setRestSeconds] = useState(REST_DURATION_SECONDS);
+    const [isRestTimerVisible, setIsRestTimerVisible] = useState(false);
+    const [isRestTimerRunning, setIsRestTimerRunning] = useState(false);
+    const [setEditorTarget, setSetEditorTarget] = useState<SetEditorTarget | null>(null);
 
     useEffect(() => {
         const timer = setInterval(() => {
@@ -46,6 +70,25 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
 
         return () => clearInterval(timer);
     }, []);
+
+    useEffect(() => {
+        if (!isRestTimerVisible || !isRestTimerRunning) {
+            return;
+        }
+
+        const timer = setInterval(() => {
+            setRestSeconds((seconds) => {
+                if (seconds <= 1) {
+                    setIsRestTimerRunning(false);
+                    return 0;
+                }
+
+                return seconds - 1;
+            });
+        }, 1000);
+
+        return () => clearInterval(timer);
+    }, [isRestTimerRunning, isRestTimerVisible]);
 
     const loadWorkoutData = useCallback(async () => {
         try {
@@ -126,6 +169,74 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
         );
 
         await updateExercises(updated);
+    };
+
+    const startRestTimer = () => {
+        setRestSeconds(REST_DURATION_SECONDS);
+        setIsRestTimerVisible(true);
+        setIsRestTimerRunning(true);
+    };
+
+    const getSetRowKey = (exerciseId: string, setIndex: number) => `${exerciseId}-${setIndex}`;
+
+    const handleToggleSetCompletion = async (exerciseId: string, setEntry: SetEntry) => {
+        const nextCompleted = !setEntry.completed;
+
+        await updateSetEntry(exerciseId, setEntry.id, {
+            completed: nextCompleted,
+        });
+
+        if (nextCompleted) {
+            startRestTimer();
+        }
+    };
+
+    const scrollSelectedSetIntoView = (exerciseId: string, setIndex: number) => {
+        const exerciseY = exerciseLayoutY.current[exerciseId];
+        const setY = setLayoutY.current[getSetRowKey(exerciseId, setIndex)];
+
+        if (exerciseY === undefined || setY === undefined) {
+            return;
+        }
+
+        const targetOffset = Math.max(0, exerciseY + setY - 220);
+
+        listRef.current?.scrollToOffset({
+            offset: targetOffset,
+            animated: true,
+        });
+    };
+
+    const openSetEditor = (
+        exerciseId: string,
+        exerciseName: string,
+        setEntry: SetEntry,
+        setIndex: number
+    ) => {
+        scrollSelectedSetIntoView(exerciseId, setIndex);
+
+        setTimeout(() => {
+            setSetEditorTarget({
+                exerciseId,
+                setId: setEntry.id,
+                exerciseName,
+                setIndex,
+                reps: setEntry.reps,
+                weight: setEntry.weight,
+            });
+        }, 120);
+    };
+
+    const handleSaveSetEditor = async (reps: string, weight: string) => {
+        if (!setEditorTarget) {
+            return;
+        }
+
+        await updateSetEntry(setEditorTarget.exerciseId, setEditorTarget.setId, {
+            reps,
+            weight,
+        });
+        setSetEditorTarget(null);
     };
 
     const addSetToExercise = async (exerciseId: string) => {
@@ -236,6 +347,7 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
     return (
         <Screen style={styles.container}>
             <FlatList
+                ref={listRef}
                 data={normalizedExercises}
                 keyExtractor={(item) => item.id}
                 contentContainerStyle={styles.content}
@@ -287,6 +399,72 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                             />
                         </View>
 
+                        {isRestTimerVisible ? (
+                            <GradientCard style={
+                                restSeconds === 0 ? styles.restTimerCardComplete : styles.restTimerCard
+                            }>
+                                <View style={styles.restTimerHeader}>
+                                    <View>
+                                        <Text style={styles.restTimerLabel}>
+                                            {restSeconds === 0 ? 'Rest complete' : 'Rest timer'}
+                                        </Text>
+                                        <Text style={styles.restTimerSubtext}>
+                                            {restSeconds === 0
+                                                ? 'Ready for the next set.'
+                                                : 'Next set starts when you are ready.'}
+                                        </Text>
+                                    </View>
+                                    <Text style={[
+                                        styles.restTimerTime,
+                                        restSeconds === 0 && styles.restTimerTimeComplete,
+                                    ]}>
+                                        {formatRestTime(restSeconds)}
+                                    </Text>
+                                </View>
+                                <View style={styles.restTimerControls}>
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.restTimerButton,
+                                            !isRestTimerRunning && styles.restTimerButtonDisabled,
+                                        ]}
+                                        onPress={() => setIsRestTimerRunning(false)}
+                                        disabled={!isRestTimerRunning}
+                                    >
+                                        <Text style={styles.restTimerButtonText}>Pause</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.restTimerButton,
+                                            (isRestTimerRunning || restSeconds === 0) && styles.restTimerButtonDisabled,
+                                        ]}
+                                        onPress={() => setIsRestTimerRunning(true)}
+                                        disabled={isRestTimerRunning || restSeconds === 0}
+                                    >
+                                        <Text style={styles.restTimerButtonText}>Resume</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={styles.restTimerButton}
+                                        onPress={() => {
+                                            setRestSeconds(REST_DURATION_SECONDS);
+                                            setIsRestTimerVisible(true);
+                                            setIsRestTimerRunning(true);
+                                        }}
+                                    >
+                                        <Text style={styles.restTimerButtonText}>Reset</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[styles.restTimerButton, styles.restTimerSkipButton]}
+                                        onPress={() => {
+                                            setIsRestTimerRunning(false);
+                                            setIsRestTimerVisible(false);
+                                        }}
+                                    >
+                                        <Text style={styles.restTimerSkipText}>Skip</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </GradientCard>
+                        ) : null}
+
                         <Text style={styles.sectionLabel}>Session exercises</Text>
                         {normalizedExercises.length === 0 ? (
                             <Text style={styles.emptyText}>
@@ -300,7 +478,12 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                     const allCompleted = completedSets === item.setEntries.length && item.setEntries.length > 0;
 
                     return (
-                        <View style={[styles.exerciseCard, allCompleted && styles.exerciseCardCompleted]}>
+                        <View
+                            style={[styles.exerciseCard, allCompleted && styles.exerciseCardCompleted]}
+                            onLayout={(event: LayoutChangeEvent) => {
+                                exerciseLayoutY.current[item.id] = event.nativeEvent.layout.y;
+                            }}
+                        >
                             <View style={styles.exerciseHeader}>
                                 <View style={styles.exerciseLeft}>
                                     <Text style={styles.exerciseName}>{item.name}</Text>
@@ -311,32 +494,46 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                             </View>
 
                             {item.setEntries.map((setEntry, index) => (
-                                <View key={setEntry.id} style={styles.setRow}>
+                                <TouchableOpacity
+                                    key={setEntry.id}
+                                    activeOpacity={0.88}
+                                    style={styles.setRow}
+                                    onPress={() => openSetEditor(item.id, item.name, setEntry, index)}
+                                    onLayout={(event: LayoutChangeEvent) => {
+                                        setLayoutY.current[getSetRowKey(item.id, index)] = event.nativeEvent.layout.y;
+                                    }}
+                                >
                                     <View style={styles.setIndexPill}>
                                         <Text style={styles.setIndexText}>Set {index + 1}</Text>
                                     </View>
                                     <View style={styles.setFields}>
                                         <View style={styles.setField}>
                                             <Text style={styles.setFieldLabel}>kg</Text>
-                                            <TextInput
-                                                value={setEntry.weight}
-                                                onChangeText={(value) => updateSetEntry(item.id, setEntry.id, { weight: value })}
-                                                placeholder="0"
-                                                placeholderTextColor="#777"
-                                                keyboardType="numeric"
-                                                style={styles.setInput}
-                                            />
+                                            <TouchableOpacity
+                                                style={styles.setValueChip}
+                                                onPress={(event) => {
+                                                    event.stopPropagation();
+                                                    openSetEditor(item.id, item.name, setEntry, index);
+                                                }}
+                                            >
+                                                <Text style={styles.setValueText} numberOfLines={1}>
+                                                    {setEntry.weight ? `${setEntry.weight} kg` : '0 kg'}
+                                                </Text>
+                                            </TouchableOpacity>
                                         </View>
                                         <View style={styles.setField}>
                                             <Text style={styles.setFieldLabel}>reps</Text>
-                                            <TextInput
-                                                value={setEntry.reps}
-                                                onChangeText={(value) => updateSetEntry(item.id, setEntry.id, { reps: value })}
-                                                placeholder="0"
-                                                placeholderTextColor="#777"
-                                                keyboardType="numeric"
-                                                style={styles.setInput}
-                                            />
+                                            <TouchableOpacity
+                                                style={styles.setValueChip}
+                                                onPress={(event) => {
+                                                    event.stopPropagation();
+                                                    openSetEditor(item.id, item.name, setEntry, index);
+                                                }}
+                                            >
+                                                <Text style={styles.setValueText} numberOfLines={1}>
+                                                    {setEntry.reps || '0 reps'}
+                                                </Text>
+                                            </TouchableOpacity>
                                         </View>
                                     </View>
                                     <View style={styles.setActionButtons}>
@@ -345,11 +542,10 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                                                 styles.checkButton,
                                                 setEntry.completed && styles.checkButtonCompleted,
                                             ]}
-                                            onPress={() =>
-                                                updateSetEntry(item.id, setEntry.id, {
-                                                    completed: !setEntry.completed,
-                                                })
-                                            }
+                                            onPress={(event) => {
+                                                event.stopPropagation();
+                                                handleToggleSetCompletion(item.id, setEntry);
+                                            }}
                                         >
                                             <Icon.Ionicons
                                                 name={setEntry.completed ? 'checkmark' : 'ellipse-outline'}
@@ -359,12 +555,15 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                                         </TouchableOpacity>
                                         <TouchableOpacity
                                             style={styles.deleteSetButton}
-                                            onPress={() => deleteSetFromExercise(item.id, setEntry.id)}
+                                            onPress={(event) => {
+                                                event.stopPropagation();
+                                                deleteSetFromExercise(item.id, setEntry.id);
+                                            }}
                                         >
                                             <Icon.Ionicons name="trash-outline" size={18} color="#F87171" />
                                         </TouchableOpacity>
                                     </View>
-                                </View>
+                                </TouchableOpacity>
                             ))}
 
                             <View style={styles.exerciseActions}>
@@ -392,7 +591,281 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                     </View>
                 )}
             />
+            <SetEditorModal
+                visible={!!setEditorTarget}
+                exerciseName={setEditorTarget?.exerciseName ?? ''}
+                setIndex={setEditorTarget?.setIndex ?? 0}
+                reps={setEditorTarget?.reps ?? ''}
+                weight={setEditorTarget?.weight ?? ''}
+                onCancel={() => setSetEditorTarget(null)}
+                onSave={handleSaveSetEditor}
+            />
         </Screen>
+    );
+}
+
+function SetEditorModal({
+    visible,
+    exerciseName,
+    setIndex,
+    reps,
+    weight,
+    onCancel,
+    onSave,
+}: {
+    visible: boolean;
+    exerciseName: string;
+    setIndex: number;
+    reps: string;
+    weight: string;
+    onCancel: () => void;
+    onSave: (reps: string, weight: string) => void;
+}) {
+    const [draftReps, setDraftReps] = useState('');
+    const [draftWeight, setDraftWeight] = useState('');
+    const [activeField, setActiveField] = useState<SetEditorField>('weight');
+    const translateY = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        if (visible) {
+            translateY.setValue(0);
+            setDraftReps(reps);
+            setDraftWeight(weight);
+            setActiveField('weight');
+        }
+    }, [reps, translateY, visible, weight]);
+
+    const snapModalBack = useCallback(() => {
+        Animated.spring(translateY, {
+            toValue: 0,
+            useNativeDriver: true,
+            bounciness: 3,
+        }).start();
+    }, [translateY]);
+
+    const closeFromDrag = useCallback(() => {
+        Animated.timing(translateY, {
+            toValue: 320,
+            duration: 160,
+            useNativeDriver: true,
+        }).start(() => {
+            onCancel();
+            translateY.setValue(0);
+        });
+    }, [onCancel, translateY]);
+
+    const panResponder = useMemo(
+        () =>
+            PanResponder.create({
+                onMoveShouldSetPanResponder: (_, gesture) =>
+                    gesture.dy > 6 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+                onPanResponderMove: (_, gesture) => {
+                    translateY.setValue(Math.max(0, gesture.dy));
+                },
+                onPanResponderRelease: (_, gesture) => {
+                    if (gesture.dy > 90 || gesture.vy > 0.8) {
+                        closeFromDrag();
+                        return;
+                    }
+
+                    snapModalBack();
+                },
+                onPanResponderTerminate: snapModalBack,
+            }),
+        [closeFromDrag, snapModalBack, translateY]
+    );
+
+    const updateReps = (step: number) => {
+        setActiveField('reps');
+        setDraftReps((current) => formatSetEditorNumber(Math.max(0, (parseFirstNumber(current) ?? 0) + step)));
+    };
+
+    const updateWeight = (step: number) => {
+        setActiveField('weight');
+        setDraftWeight((current) => formatSetEditorNumber(Math.max(0, (parseFirstNumber(current) ?? 0) + step)));
+    };
+
+    const clearActiveField = () => {
+        if (activeField === 'weight') {
+            setDraftWeight('');
+        } else {
+            setDraftReps('');
+        }
+    };
+
+    const handleKeyPress = (key: string) => {
+        if (key === 'backspace') {
+            if (activeField === 'reps') {
+                setDraftReps((current) => current.slice(0, -1));
+            } else {
+                setDraftWeight((current) => current.slice(0, -1));
+            }
+
+            return;
+        }
+
+        if (key === '.' && activeField !== 'weight') {
+            return;
+        }
+
+        if (activeField === 'reps') {
+            setDraftReps((current) => appendKeyToNumericText(current, key, 'reps'));
+        } else {
+            setDraftWeight((current) => appendKeyToNumericText(current, key, 'weight'));
+        }
+    };
+
+    return (
+        <Modal
+            visible={visible}
+            transparent
+            animationType="slide"
+            onRequestClose={onCancel}
+        >
+            <View style={styles.modalOverlay}>
+                <Animated.View style={[styles.setEditorSheet, { transform: [{ translateY }] }]}>
+                    <View style={styles.sheetDragArea} {...panResponder.panHandlers}>
+                        <View style={styles.sheetHandle} />
+                    </View>
+                    <View style={styles.setEditorHeader}>
+                        <View style={styles.setEditorTitleWrap}>
+                            <Text style={styles.setEditorTitle} numberOfLines={1}>
+                                {exerciseName} · Set {setIndex + 1}
+                            </Text>
+                        </View>
+                        <TouchableOpacity style={styles.modalCloseButton} onPress={onCancel}>
+                            <Icon.Ionicons name="close" size={18} color={colors.text} />
+                        </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.editorValuesRow}>
+                        <EditableValueCard
+                            label="Weight"
+                            value={draftWeight || '0'}
+                            unit="kg"
+                            isActive={activeField === 'weight'}
+                            onPress={() => setActiveField('weight')}
+                            onDecrease={() => updateWeight(-2.5)}
+                            onIncrease={() => updateWeight(2.5)}
+                        />
+                        <EditableValueCard
+                            label="Reps"
+                            value={draftReps || '0'}
+                            unit="reps"
+                            isActive={activeField === 'reps'}
+                            onPress={() => setActiveField('reps')}
+                            onDecrease={() => updateReps(-1)}
+                            onIncrease={() => updateReps(1)}
+                        />
+                    </View>
+
+                    <NumericKeypad activeField={activeField} onPressKey={handleKeyPress} />
+
+                    <View style={styles.modalActions}>
+                        <TouchableOpacity style={styles.clearButton} onPress={clearActiveField}>
+                            <Text style={styles.clearButtonText}>Clear</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.saveSetButton}
+                            onPress={() => onSave(formatRepsForSave(draftReps), formatWeightForSave(draftWeight))}
+                        >
+                            <Text style={styles.saveSetButtonText}>Save</Text>
+                        </TouchableOpacity>
+                    </View>
+                </Animated.View>
+            </View>
+        </Modal>
+    );
+}
+
+function EditableValueCard({
+    label,
+    value,
+    unit,
+    isActive,
+    onPress,
+    onDecrease,
+    onIncrease,
+}: {
+    label: string;
+    value: string;
+    unit: string;
+    isActive: boolean;
+    onPress: () => void;
+    onDecrease: () => void;
+    onIncrease: () => void;
+}) {
+    return (
+        <TouchableOpacity
+            activeOpacity={0.9}
+            style={[styles.editableValueCard, isActive && styles.editableValueCardActive]}
+            onPress={onPress}
+        >
+            <View style={styles.editableValueHeader}>
+                <Text style={styles.stepperLabel}>{label}</Text>
+                <View style={[
+                    styles.activeDot,
+                    isActive && styles.activeDotSelected,
+                ]} />
+            </View>
+            <View style={styles.editableValueBody}>
+                <TouchableOpacity style={styles.valueAdjustButton} onPress={onDecrease}>
+                    <Icon.Ionicons name="remove" size={18} color={colors.text} />
+                </TouchableOpacity>
+                <View style={styles.editableValueWrap}>
+                    <Text style={styles.editableValueText} numberOfLines={1}>{value}</Text>
+                    <Text style={styles.stepperUnit}>{unit}</Text>
+                </View>
+                <TouchableOpacity style={[styles.valueAdjustButton, styles.valueAdjustButtonActive]} onPress={onIncrease}>
+                    <Icon.Ionicons name="add" size={18} color={colors.bg} />
+                </TouchableOpacity>
+            </View>
+        </TouchableOpacity>
+    );
+}
+
+function NumericKeypad({
+    activeField,
+    onPressKey,
+}: {
+    activeField: SetEditorField;
+    onPressKey: (key: string) => void;
+}) {
+    const keypadRows = [
+        ['1', '2', '3'],
+        ['4', '5', '6'],
+        ['7', '8', '9'],
+        ['.', '0', 'backspace'],
+    ];
+
+    return (
+        <View style={styles.keypadWrap}>
+            {keypadRows.map((row) => (
+                <View key={row.join('-')} style={styles.keypadRow}>
+                    {row.map((key) => {
+                        const isDecimalDisabled = key === '.' && activeField === 'reps';
+
+                        return (
+                            <TouchableOpacity
+                                key={key}
+                                style={[
+                                    styles.keypadButton,
+                                    isDecimalDisabled && styles.keypadButtonDisabled,
+                                ]}
+                                onPress={() => onPressKey(key)}
+                                disabled={isDecimalDisabled}
+                            >
+                                {key === 'backspace' ? (
+                                    <Icon.Ionicons name="backspace-outline" size={20} color={colors.text} />
+                                ) : (
+                                    <Text style={styles.keypadButtonText}>{key}</Text>
+                                )}
+                            </TouchableOpacity>
+                        );
+                    })}
+                </View>
+            ))}
+        </View>
     );
 }
 
@@ -406,6 +879,106 @@ function formatElapsed(totalSeconds: number) {
     }
 
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function formatRestTime(totalSeconds: number) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function parseFirstNumber(value?: string) {
+    if (!value) {
+        return null;
+    }
+
+    const match = value.replace(',', '.').match(/\d+(?:\.\d+)?/);
+
+    if (!match) {
+        return null;
+    }
+
+    const parsed = Number(match[0]);
+
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function appendKeyToNumericText(value: string, key: string, field: SetEditorField) {
+    if (key === '.') {
+        if (field !== 'weight' || value.includes('.')) {
+            return value;
+        }
+
+        return isDirectNumericInput(value) && value.length > 0 ? `${value}.` : '0.';
+    }
+
+    if (!/^\d$/.test(key)) {
+        return value;
+    }
+
+    const shouldReplace = !isDirectNumericInput(value);
+    const nextValue = shouldReplace ? key : `${value}${key}`;
+
+    if (field === 'reps') {
+        return stripLeadingZeros(nextValue);
+    }
+
+    return normalizeWeightDraft(nextValue);
+}
+
+function isDirectNumericInput(value: string) {
+    if (value === '') {
+        return true;
+    }
+
+    return /^\d*\.?\d*$/.test(value);
+}
+
+function stripLeadingZeros(value: string) {
+    const stripped = value.replace(/^0+(?=\d)/, '');
+
+    return stripped || '0';
+}
+
+function normalizeWeightDraft(value: string) {
+    if (value.includes('.')) {
+        const [integerPart, decimalPart = ''] = value.split('.');
+        const normalizedInteger = stripLeadingZeros(integerPart || '0');
+        return `${normalizedInteger}.${decimalPart}`;
+    }
+
+    return stripLeadingZeros(value);
+}
+
+function formatRepsForSave(value: string) {
+    const parsed = parseFirstNumber(value);
+
+    if (parsed === null) {
+        return '';
+    }
+
+    return String(Math.max(0, Math.floor(parsed)));
+}
+
+function formatWeightForSave(value: string) {
+    const parsed = parseFirstNumber(value);
+
+    if (parsed === null) {
+        return '';
+    }
+
+    return formatSetEditorNumber(Math.max(0, parsed));
+}
+
+function roundToSingleDecimal(value: number) {
+    return Math.round(value * 10) / 10;
+}
+
+function formatSetEditorNumber(value: number) {
+    const rounded = roundToSingleDecimal(value);
+
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
 const styles = StyleSheet.create({
@@ -489,6 +1062,74 @@ const styles = StyleSheet.create({
         height: '100%',
         backgroundColor: colors.accent,
     },
+    restTimerCard: {
+        marginBottom: spacing.lg,
+        borderWidth: 1,
+        borderColor: '#2F3D18',
+    },
+    restTimerCardComplete: {
+        marginBottom: spacing.lg,
+        borderWidth: 1,
+        borderColor: colors.accent,
+    },
+    restTimerHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: spacing.md,
+    },
+    restTimerLabel: {
+        color: colors.text,
+        fontSize: 16,
+        fontWeight: '800',
+    },
+    restTimerSubtext: {
+        color: colors.sub,
+        fontSize: 12,
+        marginTop: spacing.xs,
+    },
+    restTimerTime: {
+        color: colors.text,
+        fontSize: 30,
+        fontWeight: '900',
+        fontVariant: ['tabular-nums'],
+    },
+    restTimerTimeComplete: {
+        color: colors.accent,
+    },
+    restTimerControls: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: spacing.sm,
+        marginTop: spacing.md,
+    },
+    restTimerButton: {
+        minWidth: 72,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: '#2A2A2A',
+        backgroundColor: '#171717',
+        paddingHorizontal: spacing.sm,
+        paddingVertical: spacing.sm,
+        alignItems: 'center',
+    },
+    restTimerButtonDisabled: {
+        opacity: 0.42,
+    },
+    restTimerButtonText: {
+        color: colors.text,
+        fontSize: 12,
+        fontWeight: '800',
+    },
+    restTimerSkipButton: {
+        borderColor: '#3A1A1A',
+        backgroundColor: '#1A1010',
+    },
+    restTimerSkipText: {
+        color: '#FCA5A5',
+        fontSize: 12,
+        fontWeight: '800',
+    },
     sectionLabel: {
         color: colors.text,
         fontWeight: '700',
@@ -566,14 +1207,20 @@ const styles = StyleSheet.create({
         marginBottom: 4,
         textTransform: 'uppercase',
     },
-    setInput: {
+    setValueChip: {
         backgroundColor: '#101010',
         borderWidth: 1,
         borderColor: '#2A2A2A',
         borderRadius: 14,
-        color: colors.text,
         paddingHorizontal: 12,
         paddingVertical: 12,
+        minHeight: 46,
+        justifyContent: 'center',
+    },
+    setValueText: {
+        color: colors.text,
+        fontSize: 15,
+        fontWeight: '800',
     },
     setActionButtons: {
         flexDirection: 'row',
@@ -640,5 +1287,195 @@ const styles = StyleSheet.create({
         color: colors.bg,
         fontSize: 16,
         fontWeight: '800',
+    },
+    modalOverlay: {
+        flex: 1,
+        justifyContent: 'flex-end',
+        backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    },
+    setEditorSheet: {
+        maxHeight: SET_EDITOR_MAX_HEIGHT,
+        backgroundColor: '#0D0D0D',
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        borderWidth: 1,
+        borderColor: '#242424',
+        paddingHorizontal: spacing.lg,
+        paddingTop: spacing.sm,
+        paddingBottom: spacing.md,
+    },
+    sheetDragArea: {
+        alignItems: 'center',
+        paddingVertical: spacing.xs,
+        marginBottom: spacing.xs,
+    },
+    sheetHandle: {
+        width: 40,
+        height: 4,
+        borderRadius: 999,
+        backgroundColor: '#343434',
+    },
+    setEditorHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
+        marginBottom: spacing.sm,
+    },
+    setEditorTitleWrap: {
+        flex: 1,
+    },
+    setEditorTitle: {
+        color: colors.text,
+        fontSize: 16,
+        fontWeight: '900',
+    },
+    modalCloseButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: '#171717',
+        borderWidth: 1,
+        borderColor: '#2A2A2A',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    editorValuesRow: {
+        flexDirection: 'row',
+        gap: spacing.sm,
+        marginBottom: spacing.sm,
+    },
+    editableValueCard: {
+        flex: 1,
+        minHeight: 92,
+        backgroundColor: colors.card,
+        borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: 16,
+        padding: spacing.xs,
+    },
+    editableValueCardActive: {
+        borderColor: colors.accent,
+        backgroundColor: '#141D0B',
+    },
+    editableValueHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: spacing.xs,
+    },
+    stepperLabel: {
+        color: colors.sub,
+        fontSize: 12,
+        fontWeight: '900',
+        textTransform: 'uppercase',
+        letterSpacing: 0.8,
+    },
+    activeDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        backgroundColor: '#333333',
+    },
+    activeDotSelected: {
+        backgroundColor: colors.accent,
+    },
+    editableValueBody: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
+    },
+    valueAdjustButton: {
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        backgroundColor: '#181818',
+        borderWidth: 1,
+        borderColor: '#2A2A2A',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    valueAdjustButtonActive: {
+        backgroundColor: colors.accent,
+        borderColor: colors.accent,
+    },
+    editableValueWrap: {
+        flex: 1,
+        minHeight: 38,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    editableValueText: {
+        color: colors.text,
+        fontSize: 24,
+        fontWeight: '900',
+        fontVariant: ['tabular-nums'],
+    },
+    stepperUnit: {
+        color: colors.sub,
+        fontSize: 11,
+        fontWeight: '800',
+        marginTop: 2,
+        textTransform: 'uppercase',
+    },
+    keypadWrap: {
+        gap: 7,
+        marginBottom: spacing.sm,
+    },
+    keypadRow: {
+        flexDirection: 'row',
+        gap: 7,
+    },
+    keypadButton: {
+        flex: 1,
+        height: 44,
+        borderRadius: 14,
+        backgroundColor: '#151515',
+        borderWidth: 1,
+        borderColor: '#2A2A2A',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    keypadButtonDisabled: {
+        opacity: 0.28,
+    },
+    keypadButtonText: {
+        color: colors.text,
+        fontSize: 21,
+        fontWeight: '900',
+    },
+    modalActions: {
+        flexDirection: 'row',
+        gap: spacing.sm,
+        marginTop: spacing.xs,
+    },
+    clearButton: {
+        flex: 1,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#2A2A2A',
+        backgroundColor: '#171717',
+        height: 46,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    clearButtonText: {
+        color: colors.text,
+        fontSize: 15,
+        fontWeight: '800',
+    },
+    saveSetButton: {
+        flex: 1,
+        borderRadius: 14,
+        backgroundColor: colors.accent,
+        height: 46,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    saveSetButtonText: {
+        color: colors.bg,
+        fontSize: 15,
+        fontWeight: '900',
     },
 });
