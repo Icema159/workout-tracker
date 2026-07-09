@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
     Alert,
     Animated,
+    AppState,
     Dimensions,
-    FlatList,
     LayoutChangeEvent,
     Modal,
     PanResponder,
+    Platform,
+    ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -14,6 +16,8 @@ import {
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import * as Notifications from 'expo-notifications';
 import { Icon, Screen } from '../components/Ui';
 import GradientCard from '../components/GradientCard';
 import WorkoutImageBanner from '../components/WorkoutImageBanner';
@@ -45,50 +49,159 @@ type SetEditorField = 'weight' | 'reps';
 
 const REST_DURATION_SECONDS = 90;
 const SET_EDITOR_MAX_HEIGHT = Dimensions.get('window').height * 0.55;
+const ACTIVE_WORKOUT_KEEP_AWAKE_TAG = 'active-workout-screen';
+const REST_NOTIFICATION_CHANNEL_ID = 'rest-timer';
 
 export default function ActiveWorkoutScreen({ route, navigation }: Props) {
     const { workoutId } = route.params;
-    const listRef = useRef<FlatList<NormalizedExercise>>(null);
+    const scrollViewRef = useRef<ScrollView>(null);
     const exerciseLayoutY = useRef<Record<string, number>>({});
     const setLayoutY = useRef<Record<string, number>>({});
+    const restNotificationIdRef = useRef<string | null>(null);
+    const restNotificationRequestRef = useRef(0);
     const [workoutName, setWorkoutName] = useState(route.params.title);
     const [workoutDate, setWorkoutDate] = useState(
         route.params.date ?? new Date().toISOString().slice(0, 10)
     );
     const [exercises, setExercises] = useState<Exercise[]>([]);
     const [isSavingWorkout, setIsSavingWorkout] = useState(false);
-    const [elapsedSeconds, setElapsedSeconds] = useState(0);
-    const [restSeconds, setRestSeconds] = useState(REST_DURATION_SECONDS);
+    const [workoutStartedAt] = useState(() => Date.now());
+    const [nowMs, setNowMs] = useState(() => Date.now());
+    const [restEndsAt, setRestEndsAt] = useState<number | null>(null);
+    const [pausedRestSeconds, setPausedRestSeconds] = useState<number | null>(null);
     const [isRestTimerVisible, setIsRestTimerVisible] = useState(false);
     const [isRestTimerRunning, setIsRestTimerRunning] = useState(false);
     const [setEditorTarget, setSetEditorTarget] = useState<SetEditorTarget | null>(null);
 
     useEffect(() => {
         const timer = setInterval(() => {
-            setElapsedSeconds((seconds) => seconds + 1);
+            setNowMs(Date.now());
         }, 1000);
 
         return () => clearInterval(timer);
     }, []);
 
     useEffect(() => {
-        if (!isRestTimerVisible || !isRestTimerRunning) {
+        const subscription = AppState.addEventListener('change', (nextState) => {
+            if (nextState === 'active') {
+                setNowMs(Date.now());
+            }
+        });
+
+        return () => subscription.remove();
+    }, []);
+
+    const elapsedSeconds = useMemo(
+        () => getElapsedSeconds(workoutStartedAt, nowMs),
+        [nowMs, workoutStartedAt]
+    );
+
+    const restSeconds = useMemo(() => {
+        if (!isRestTimerVisible) {
+            return REST_DURATION_SECONDS;
+        }
+
+        if (isRestTimerRunning && restEndsAt) {
+            return getRemainingRestSeconds(restEndsAt, nowMs);
+        }
+
+        if (pausedRestSeconds !== null) {
+            return pausedRestSeconds;
+        }
+
+        return restEndsAt ? getRemainingRestSeconds(restEndsAt, nowMs) : REST_DURATION_SECONDS;
+    }, [isRestTimerRunning, isRestTimerVisible, nowMs, pausedRestSeconds, restEndsAt]);
+
+    useEffect(() => {
+        if (isRestTimerRunning && restEndsAt && nowMs >= restEndsAt) {
+            setIsRestTimerRunning(false);
+            setPausedRestSeconds(null);
+        }
+    }, [isRestTimerRunning, nowMs, restEndsAt]);
+
+    const cancelRestNotification = useCallback(async () => {
+        restNotificationRequestRef.current += 1;
+
+        const notificationId = restNotificationIdRef.current;
+        restNotificationIdRef.current = null;
+
+        if (!notificationId) {
             return;
         }
 
-        const timer = setInterval(() => {
-            setRestSeconds((seconds) => {
-                if (seconds <= 1) {
-                    setIsRestTimerRunning(false);
-                    return 0;
-                }
+        try {
+            await Notifications.cancelScheduledNotificationAsync(notificationId);
+        } catch (error) {
+            console.warn('Failed to cancel rest notification', error);
+        }
+    }, []);
 
-                return seconds - 1;
+    const ensureRestNotificationPermissions = useCallback(async () => {
+        try {
+            if (Platform.OS === 'android') {
+                await Notifications.setNotificationChannelAsync(REST_NOTIFICATION_CHANNEL_ID, {
+                    name: 'Rest timer',
+                    importance: Notifications.AndroidImportance.HIGH,
+                    sound: 'default',
+                });
+            }
+
+            const existingPermissions = await Notifications.getPermissionsAsync();
+            let finalStatus = existingPermissions.status;
+
+            if (finalStatus !== 'granted') {
+                const requestedPermissions = await Notifications.requestPermissionsAsync();
+                finalStatus = requestedPermissions.status;
+            }
+
+            return finalStatus === 'granted';
+        } catch (error) {
+            console.warn('Failed to request notification permissions', error);
+            return false;
+        }
+    }, []);
+
+    const scheduleRestNotification = useCallback(async (endsAt: number) => {
+        await cancelRestNotification();
+
+        const requestId = restNotificationRequestRef.current + 1;
+        restNotificationRequestRef.current = requestId;
+
+        const hasPermission = await ensureRestNotificationPermissions();
+
+        if (!hasPermission || restNotificationRequestRef.current !== requestId) {
+            return;
+        }
+
+        const secondsUntilRestComplete = getRemainingRestSeconds(endsAt);
+
+        if (secondsUntilRestComplete <= 0) {
+            return;
+        }
+
+        try {
+            const notificationId = await Notifications.scheduleNotificationAsync({
+                content: {
+                    title: 'Rest complete',
+                    body: 'Time for your next set.',
+                    sound: 'default',
+                },
+                trigger: {
+                    type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+                    seconds: secondsUntilRestComplete,
+                    channelId: REST_NOTIFICATION_CHANNEL_ID,
+                },
             });
-        }, 1000);
 
-        return () => clearInterval(timer);
-    }, [isRestTimerRunning, isRestTimerVisible]);
+            if (restNotificationRequestRef.current === requestId) {
+                restNotificationIdRef.current = notificationId;
+            } else {
+                await Notifications.cancelScheduledNotificationAsync(notificationId);
+            }
+        } catch (error) {
+            console.warn('Failed to schedule rest notification', error);
+        }
+    }, [cancelRestNotification, ensureRestNotificationPermissions]);
 
     const loadWorkoutData = useCallback(async () => {
         try {
@@ -116,9 +229,25 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
 
     useFocusEffect(
         useCallback(() => {
+            void activateKeepAwakeAsync(ACTIVE_WORKOUT_KEEP_AWAKE_TAG).catch((error) => {
+                console.warn('Failed to activate keep awake', error);
+            });
             loadWorkoutData();
-        }, [loadWorkoutData])
+
+            return () => {
+                void deactivateKeepAwake(ACTIVE_WORKOUT_KEEP_AWAKE_TAG).catch((error) => {
+                    console.warn('Failed to deactivate keep awake', error);
+                });
+                void cancelRestNotification();
+            };
+        }, [cancelRestNotification, loadWorkoutData])
     );
+
+    useEffect(() => {
+        return () => {
+            void cancelRestNotification();
+        };
+    }, [cancelRestNotification]);
 
     const normalizedExercises = useMemo(
         () => exercises.map(normalizeExercise),
@@ -172,9 +301,64 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
     };
 
     const startRestTimer = () => {
-        setRestSeconds(REST_DURATION_SECONDS);
+        const now = Date.now();
+        const nextRestEndsAt = now + REST_DURATION_SECONDS * 1000;
+
+        setNowMs(now);
+        setRestEndsAt(nextRestEndsAt);
+        setPausedRestSeconds(null);
         setIsRestTimerVisible(true);
         setIsRestTimerRunning(true);
+        void scheduleRestNotification(nextRestEndsAt);
+    };
+
+    const pauseRestTimer = () => {
+        const remainingSeconds = restEndsAt
+            ? getRemainingRestSeconds(restEndsAt, Date.now())
+            : restSeconds;
+
+        setNowMs(Date.now());
+        setPausedRestSeconds(remainingSeconds);
+        setRestEndsAt(null);
+        setIsRestTimerRunning(false);
+        void cancelRestNotification();
+    };
+
+    const resumeRestTimer = () => {
+        if (pausedRestSeconds === null || pausedRestSeconds <= 0) {
+            return;
+        }
+
+        const now = Date.now();
+        const nextRestEndsAt = now + pausedRestSeconds * 1000;
+
+        setNowMs(now);
+        setRestEndsAt(nextRestEndsAt);
+        setPausedRestSeconds(null);
+        setIsRestTimerVisible(true);
+        setIsRestTimerRunning(true);
+        void scheduleRestNotification(nextRestEndsAt);
+    };
+
+    const resetRestTimer = () => {
+        const now = Date.now();
+        const nextRestEndsAt = now + REST_DURATION_SECONDS * 1000;
+
+        setNowMs(now);
+        setRestEndsAt(nextRestEndsAt);
+        setPausedRestSeconds(null);
+        setIsRestTimerVisible(true);
+        setIsRestTimerRunning(true);
+        void scheduleRestNotification(nextRestEndsAt);
+    };
+
+    const skipRestTimer = () => {
+        setNowMs(Date.now());
+        setRestEndsAt(null);
+        setPausedRestSeconds(null);
+        setIsRestTimerRunning(false);
+        setIsRestTimerVisible(false);
+        void cancelRestNotification();
     };
 
     const getSetRowKey = (exerciseId: string, setIndex: number) => `${exerciseId}-${setIndex}`;
@@ -201,8 +385,8 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
 
         const targetOffset = Math.max(0, exerciseY + setY - 220);
 
-        listRef.current?.scrollToOffset({
-            offset: targetOffset,
+        scrollViewRef.current?.scrollTo({
+            y: targetOffset,
             animated: true,
         });
     };
@@ -298,9 +482,11 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
     };
 
     const handleFinishWorkout = async () => {
+        const currentDurationSeconds = getElapsedSeconds(workoutStartedAt);
+
         Alert.alert(
             'Finish workout?',
-            `${summary.completedSets}/${summary.totalSets} sets completed in ${formatElapsed(elapsedSeconds)}.`,
+            `${summary.completedSets}/${summary.totalSets} sets completed in ${formatElapsed(currentDurationSeconds)}.`,
             [
                 { text: 'Keep Training', style: 'cancel' },
                 {
@@ -309,15 +495,18 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                         setIsSavingWorkout(true);
 
                         try {
+                            await cancelRestNotification();
                             await saveExercises(workoutId, normalizedExercises);
                             const existingWorkout = (await getWorkouts()).find((item) => item.id === workoutId);
 
                             if (existingWorkout) {
+                                const finishedDurationSeconds = getElapsedSeconds(workoutStartedAt);
+
                                 await upsertWorkout({
                                     ...existingWorkout,
                                     status: 'finished',
                                     completedAt: new Date().toISOString(),
-                                    durationSeconds: elapsedSeconds,
+                                    durationSeconds: finishedDurationSeconds,
                                 });
                             }
 
@@ -346,12 +535,10 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
 
     return (
         <Screen style={styles.container}>
-            <FlatList
-                ref={listRef}
-                data={normalizedExercises}
-                keyExtractor={(item) => item.id}
+            <ScrollView
+                ref={scrollViewRef}
                 contentContainerStyle={styles.content}
-                ListHeaderComponent={(
+            >
                     <View>
                         <View style={styles.topBar}>
                             <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
@@ -427,7 +614,7 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                                             styles.restTimerButton,
                                             !isRestTimerRunning && styles.restTimerButtonDisabled,
                                         ]}
-                                        onPress={() => setIsRestTimerRunning(false)}
+                                        onPress={pauseRestTimer}
                                         disabled={!isRestTimerRunning}
                                     >
                                         <Text style={styles.restTimerButtonText}>Pause</Text>
@@ -437,27 +624,20 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                                             styles.restTimerButton,
                                             (isRestTimerRunning || restSeconds === 0) && styles.restTimerButtonDisabled,
                                         ]}
-                                        onPress={() => setIsRestTimerRunning(true)}
+                                        onPress={resumeRestTimer}
                                         disabled={isRestTimerRunning || restSeconds === 0}
                                     >
                                         <Text style={styles.restTimerButtonText}>Resume</Text>
                                     </TouchableOpacity>
                                     <TouchableOpacity
                                         style={styles.restTimerButton}
-                                        onPress={() => {
-                                            setRestSeconds(REST_DURATION_SECONDS);
-                                            setIsRestTimerVisible(true);
-                                            setIsRestTimerRunning(true);
-                                        }}
+                                        onPress={resetRestTimer}
                                     >
                                         <Text style={styles.restTimerButtonText}>Reset</Text>
                                     </TouchableOpacity>
                                     <TouchableOpacity
                                         style={[styles.restTimerButton, styles.restTimerSkipButton]}
-                                        onPress={() => {
-                                            setIsRestTimerRunning(false);
-                                            setIsRestTimerVisible(false);
-                                        }}
+                                        onPress={skipRestTimer}
                                     >
                                         <Text style={styles.restTimerSkipText}>Skip</Text>
                                     </TouchableOpacity>
@@ -472,13 +652,13 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                             </Text>
                         ) : null}
                     </View>
-                )}
-                renderItem={({ item }) => {
+                {normalizedExercises.map((item) => {
                     const completedSets = item.setEntries.filter((setEntry) => setEntry.completed).length;
                     const allCompleted = completedSets === item.setEntries.length && item.setEntries.length > 0;
 
                     return (
                         <View
+                            key={item.id}
                             style={[styles.exerciseCard, allCompleted && styles.exerciseCardCompleted]}
                             onLayout={(event: LayoutChangeEvent) => {
                                 exerciseLayoutY.current[item.id] = event.nativeEvent.layout.y;
@@ -576,21 +756,19 @@ export default function ActiveWorkoutScreen({ route, navigation }: Props) {
                             </View>
                         </View>
                     );
-                }}
-                ListFooterComponent={(
-                    <View style={styles.footer}>
-                        <TouchableOpacity
-                            style={[styles.finishButton, isSavingWorkout && styles.finishButtonDisabled]}
-                            onPress={handleFinishWorkout}
-                            disabled={isSavingWorkout}
-                        >
-                            <Text style={styles.finishButtonText}>
-                                {isSavingWorkout ? 'Finishing...' : 'Finish Workout'}
-                            </Text>
-                        </TouchableOpacity>
-                    </View>
-                )}
-            />
+                })}
+                <View style={styles.footer}>
+                    <TouchableOpacity
+                        style={[styles.finishButton, isSavingWorkout && styles.finishButtonDisabled]}
+                        onPress={handleFinishWorkout}
+                        disabled={isSavingWorkout}
+                    >
+                        <Text style={styles.finishButtonText}>
+                            {isSavingWorkout ? 'Finishing...' : 'Finish Workout'}
+                        </Text>
+                    </TouchableOpacity>
+                </View>
+            </ScrollView>
             <SetEditorModal
                 visible={!!setEditorTarget}
                 exerciseName={setEditorTarget?.exerciseName ?? ''}
@@ -657,8 +835,15 @@ function SetEditorModal({
     const panResponder = useMemo(
         () =>
             PanResponder.create({
+                onStartShouldSetPanResponder: () => false,
+                onStartShouldSetPanResponderCapture: () => false,
                 onMoveShouldSetPanResponder: (_, gesture) =>
                     gesture.dy > 6 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+                onMoveShouldSetPanResponderCapture: (_, gesture) =>
+                    gesture.dy > 6 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+                onPanResponderGrant: () => {
+                    translateY.stopAnimation();
+                },
                 onPanResponderMove: (_, gesture) => {
                     translateY.setValue(Math.max(0, gesture.dy));
                 },
@@ -727,7 +912,7 @@ function SetEditorModal({
                     <View style={styles.sheetDragArea} {...panResponder.panHandlers}>
                         <View style={styles.sheetHandle} />
                     </View>
-                    <View style={styles.setEditorHeader}>
+                    <View style={styles.setEditorHeader} {...panResponder.panHandlers}>
                         <View style={styles.setEditorTitleWrap}>
                             <Text style={styles.setEditorTitle} numberOfLines={1}>
                                 {exerciseName} · Set {setIndex + 1}
@@ -879,6 +1064,14 @@ function formatElapsed(totalSeconds: number) {
     }
 
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function getElapsedSeconds(startedAt: number, now = Date.now()) {
+    return Math.max(0, Math.floor((now - startedAt) / 1000));
+}
+
+function getRemainingRestSeconds(restEndsAt: number, now = Date.now()) {
+    return Math.max(0, Math.ceil((restEndsAt - now) / 1000));
 }
 
 function formatRestTime(totalSeconds: number) {
